@@ -1,0 +1,26 @@
+// Test fixture: a config with a fixed, non-zero key and a manager bound to
+// a fresh test store. Test-only.
+
+import "session/session";
+import "teststore";
+
+// Fills k with bytes seed, seed+1, ... (never all zero for seed >= 1).
+export fn tf_key(k: CrKey32*, seed: int32) {
+  for i in 0..32 {
+    k->b[i] = (uint8)((seed + i) & 255);
+  }
+}
+
+// Defaults plus key seed 1.
+export fn tf_config(c: SesConfig*) {
+  ses_config_defaults(c);
+  tf_key(&c->key, 1);
+}
+
+// Initializes m over a new test store; returns the store (st must outlive m).
+export fn tf_manager(m: SesManager*, c: SesConfig*, st: SesStore*) -> TsStore* {
+  var t: TsStore* = ts_new();
+  ts_bind(t, st);
+  ses_init(m, c, st);
+  return t;
+}

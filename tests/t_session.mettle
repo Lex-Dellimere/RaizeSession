@@ -1,0 +1,268 @@
+// Session lifecycle: config checks, create, lookup, idle and absolute
+// expiry (injected clock), touch rate limiting, rotation, revocation,
+// revoke-all-for-subject, prune, and "the store never sees a token".
+
+import "std/io";
+import "session/session";
+import "tcheck";
+import "teststore";
+import "tfix";
+
+const T0 = 1700000000;
+
+var g_seen: SesToken[24];
+var g_nseen: int32 = 0;
+
+fn keep(t: SesToken*) {
+  if (g_nseen < 24) {
+    g_seen[g_nseen] = *t;
+    g_nseen = g_nseen + 1;
+  }
+}
+
+fn test_config() {
+  var c: SesConfig;
+  ses_config_defaults(&c);
+  tc_rc("config: zero key refused", ses_config_check(&c), SES_E_CONFIG);
+  tf_key(&c.key, 1);
+  tc_rc("config: defaults + key ok", ses_config_check(&c), SES_OK);
+  tc_i64("config: idle default", c.idle_timeout, 1800);
+  tc_i64("config: absolute default", c.absolute_lifetime, 28800);
+  tc_i64("config: token default", c.token_bytes, 32);
+  c.token_bytes = 16;
+  tc_rc("config: 16-byte token refused", ses_config_check(&c), SES_E_CONFIG);
+  c.token_bytes = 65;
+  tc_rc("config: 65-byte token refused", ses_config_check(&c), SES_E_CONFIG);
+  c.token_bytes = 32;
+  c.idle_timeout = 30000;
+  tc_rc("config: idle > absolute refused", ses_config_check(&c), SES_E_CONFIG);
+  c.idle_timeout = 1800;
+  c.touch_interval = 1800;
+  tc_rc("config: touch >= idle refused", ses_config_check(&c), SES_E_CONFIG);
+  c.touch_interval = 60;
+  c.has_prev_key = true;
+  tc_rc("config: zero prev key refused", ses_config_check(&c), SES_E_CONFIG);
+  tf_key(&c.prev_key, 1);
+  tc_rc("config: prev == key refused", ses_config_check(&c), SES_E_CONFIG);
+  tf_key(&c.prev_key, 2);
+  tc_rc("config: distinct prev ok", ses_config_check(&c), SES_OK);
+  var m: SesManager;
+  var st: SesStore;
+  tc_rc("init: incomplete store", ses_init(&m, &c, &st), SES_E_ARG);
+}
+
+fn test_create_lookup(m: SesManager*, t: TsStore*) {
+  var tok: SesToken;
+  var s: SesSession;
+  var now: int64 = T0;
+  tc_rc("create: empty subject", ses_create(m, "", now, &tok, &s), SES_E_ARG);
+  tc_rc("create alice", ses_create(m, "alice", now, &tok, &s), SES_OK);
+  keep(&tok);
+  tc_i64("create: token is 43 chars", tok.len, 43);
+  tc_ok("create: live", ses_is_live(&s));
+  tc_str("create: subject", ses_subject(&s), "alice");
+  tc_i64("create: one record", (int64)ts_count(t), 1);
+  var l: SesSession;
+  tc_rc("lookup ok", ses_lookup(m, ses_token_str(&tok), now + 10, &l), SES_OK);
+  tc_str("lookup subject", ses_subject(&l), "alice");
+  tc_rc("lookup: short junk", ses_lookup(m, "abc", now, &l), SES_E_NOT_FOUND);
+  tc_ok("lookup: failed handle not live", !ses_is_live(&l));
+  var bad: string = "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
+  tc_rc("lookup: non-base64url", ses_lookup(m, bad, now, &l), SES_E_NOT_FOUND);
+  var other: SesToken;
+  var oh: CrSha256;
+  ses_token_new(32, &other, &oh);
+  tc_rc("lookup: unknown token", ses_lookup(m, ses_token_str(&other), now, &l), SES_E_NOT_FOUND);
+  var flip: SesToken = tok;
+  if (flip.b[5] == (uint8)'A') { flip.b[5] = (uint8)'B'; } else { flip.b[5] = (uint8)'A'; }
+  tc_rc("lookup: one char changed", ses_lookup(m, ses_token_str(&flip), now, &l), SES_E_NOT_FOUND);
+  tc_rc("lookup: empty", ses_lookup(m, "", now, &l), SES_E_NOT_FOUND);
+}
+
+fn test_idle(m: SesManager*, t: TsStore*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "idle", T0, &tok, &s);
+  keep(&tok);
+  var n0: int32 = ts_count(t);
+  var l: SesSession;
+  tc_rc("idle: ok at 1799 s", ses_lookup(m, ses_token_str(&tok), T0 + 1799, &l), SES_OK);
+  tc_rc("idle: expired at 1800 s", ses_lookup(m, ses_token_str(&tok), T0 + 1800, &l), SES_E_EXPIRED);
+  tc_i64("idle: expired record deleted", (int64)ts_count(t), (int64)(n0 - 1));
+  tc_rc("idle: then not found", ses_lookup(m, ses_token_str(&tok), T0 + 1801, &l), SES_E_NOT_FOUND);
+}
+
+fn test_touch(m: SesManager*, t: TsStore*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "toucher", T0, &tok, &s);
+  keep(&tok);
+  var l: SesSession;
+  var p0: int32 = t->puts;
+  ses_lookup(m, ses_token_str(&tok), T0 + 30, &l);
+  tc_rc("touch at 30 s", ses_touch(m, &l, T0 + 30), SES_OK);
+  tc_i64("touch: rate-limited, no write", (int64)t->puts, (int64)p0);
+  ses_lookup(m, ses_token_str(&tok), T0 + 61, &l);
+  tc_rc("touch at 61 s", ses_touch(m, &l, T0 + 61), SES_OK);
+  tc_i64("touch: one write after interval", (int64)t->puts, (int64)(p0 + 1));
+  tc_i64("touch: last_seen persisted", l.rec.last_seen, T0 + 61);
+  tc_rc("touch: idle extended past 1800 s", ses_lookup(m, ses_token_str(&tok), T0 + 61 + 1799, &l), SES_OK);
+  tc_rc("touch: expires 1800 s after touch", ses_lookup(m, ses_token_str(&tok), T0 + 61 + 1800, &l), SES_E_EXPIRED);
+}
+
+fn test_absolute(m: SesManager*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "marathon", T0, &tok, &s);
+  keep(&tok);
+  var l: SesSession;
+  var now: int64 = T0;
+  var ok: bool = true;
+  while (now + 1000 < T0 + 28800) {
+    now = now + 1000;
+    if (ses_lookup(m, ses_token_str(&tok), now, &l) != SES_OK) { ok = false; }
+    ses_touch(m, &l, now);
+  }
+  tc_ok("absolute: alive while touched", ok);
+  tc_i64("absolute: max-age left", ses_max_age(m, &l, now), (int64)(T0 + 28800) - now);
+  tc_rc("absolute: expired at 8 h despite touches", ses_lookup(m, ses_token_str(&tok), T0 + 28800, &l), SES_E_EXPIRED);
+}
+
+fn test_rotate(m: SesManager*, t: TsStore*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "rot", T0, &tok, &s);
+  keep(&tok);
+  ses_data_set(&s, "k", "v");
+  tc_rc("rotate: save data", ses_save(m, &s), SES_OK);
+  var c1: SesToken;
+  ses_csrf_token(&s, &c1);
+  var nt: SesToken;
+  tc_ok("rotate: not due yet", !ses_needs_rotation(m, &s, T0 + 3599));
+  tc_ok("rotate: due after an hour", ses_needs_rotation(m, &s, T0 + 3600));
+  tc_rc("rotate", ses_rotate(m, &s, T0 + 100, &nt), SES_OK);
+  keep(&nt);
+  tc_ok("rotate: new token differs", ses_token_str(&nt) != ses_token_str(&tok));
+  tc_ok("rotate: not due after rotating", !ses_needs_rotation(m, &s, T0 + 3600));
+  var l: SesSession;
+  tc_rc("rotate: old token stops working", ses_lookup(m, ses_token_str(&tok), T0 + 101, &l), SES_E_NOT_FOUND);
+  tc_rc("rotate: new token works", ses_lookup(m, ses_token_str(&nt), T0 + 101, &l), SES_OK);
+  tc_str("rotate: subject kept", ses_subject(&l), "rot");
+  var v: string;
+  tc_rc("rotate: data kept", ses_data_get(&l, "k", &v), SES_OK);
+  tc_str("rotate: data value", v, "v");
+  tc_ok("rotate: csrf changed", !ses_csrf_verify(&l, ses_token_str(&c1)));
+  // A failing delete of the old record rolls back: the old token still works.
+  var bt: SesToken;
+  t->fail_del = true;
+  tc_rc("rotate: store failure reported", ses_rotate(m, &l, T0 + 102, &bt), SES_E_STORE);
+  t->fail_del = false;
+  tc_i64("rotate: failed token wiped", bt.len, 0);
+  var l2: SesSession;
+  tc_rc("rotate: old token after failed rotate", ses_lookup(m, ses_token_str(&nt), T0 + 103, &l2), SES_OK);
+}
+
+fn test_revoke(m: SesManager*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "leaver", T0, &tok, &s);
+  keep(&tok);
+  tc_rc("revoke", ses_revoke(m, &s), SES_OK);
+  tc_ok("revoke: handle not live", !ses_is_live(&s));
+  tc_rc("revoke: touch refused", ses_touch(m, &s, T0 + 1), SES_E_INVALID);
+  var l: SesSession;
+  tc_rc("revoke: lookup refused", ses_lookup(m, ses_token_str(&tok), T0 + 1, &l), SES_E_REVOKED);
+  var t2: SesToken;
+  ses_create(m, "leaver2", T0, &t2, &s);
+  keep(&t2);
+  tc_rc("revoke_token", ses_revoke_token(m, ses_token_str(&t2)), SES_OK);
+  tc_rc("revoke_token: lookup refused", ses_lookup(m, ses_token_str(&t2), T0 + 1, &l), SES_E_REVOKED);
+  tc_rc("revoke_token: junk", ses_revoke_token(m, "nope"), SES_E_NOT_FOUND);
+}
+
+fn test_revoke_subject(m: SesManager*) {
+  var tb: SesToken;
+  var tc1: SesToken;
+  var tc2: SesToken;
+  var s: SesSession;
+  ses_create(m, "bob", T0, &tb, &s);
+  ses_create(m, "carol", T0, &tc1, &s);
+  ses_create(m, "carol", T0, &tc2, &s);
+  keep(&tb);
+  keep(&tc1);
+  keep(&tc2);
+  tc_rc("revoke_subject: two of carol", ses_revoke_subject(m, "carol"), 2);
+  var l: SesSession;
+  tc_rc("revoke_subject: carol 1 gone", ses_lookup(m, ses_token_str(&tc1), T0 + 1, &l), SES_E_NOT_FOUND);
+  tc_rc("revoke_subject: carol 2 gone", ses_lookup(m, ses_token_str(&tc2), T0 + 1, &l), SES_E_NOT_FOUND);
+  tc_rc("revoke_subject: bob kept", ses_lookup(m, ses_token_str(&tb), T0 + 1, &l), SES_OK);
+  tc_rc("revoke_subject: none left", ses_revoke_subject(m, "carol"), 0);
+  tc_rc("revoke_subject: empty subject", ses_revoke_subject(m, ""), SES_E_ARG);
+}
+
+fn test_prune() {
+  var c: SesConfig;
+  tf_config(&c);
+  var m: SesManager;
+  var st: SesStore;
+  var t: TsStore* = tf_manager(&m, &c, &st);
+  var ta: SesToken;
+  var tb: SesToken;
+  var tcc: SesToken;
+  var s: SesSession;
+  ses_create(&m, "a", T0, &ta, &s);
+  ses_create(&m, "b", T0, &tb, &s);
+  ses_revoke(&m, &s);
+  ses_create(&m, "c", T0 + 20000, &tcc, &s);
+  keep(&ta);
+  keep(&tb);
+  keep(&tcc);
+  tc_rc("prune: revoked one first", ses_prune(&m, T0 + 1000), 1);
+  tc_rc("prune: then the idle-expired one", ses_prune(&m, T0 + 1800), 1);
+  tc_i64("prune: live one kept", (int64)ts_count(t), 1);
+  var l: SesSession;
+  tc_rc("prune: survivor works", ses_lookup(&m, ses_token_str(&tcc), T0 + 20001, &l), SES_OK);
+}
+
+fn test_never_stored(t: TsStore*) {
+  var clear_seen: int32 = 0;
+  var raw_seen: int32 = 0;
+  var hash_seen: int32 = 0;
+  for i in 0..g_nseen {
+    var tk: SesToken* = &g_seen[i];
+    if (ts_saw(t, &tk->b[0], tk->len)) { clear_seen = clear_seen + 1; }
+    var raw: uint8[96];
+    var rn: int64 = 0;
+    cr_base64url_decode(&raw[0], 96, &rn, &tk->b[0], tk->len);
+    if (ts_saw(t, &raw[0], rn)) { raw_seen = raw_seen + 1; }
+    var h: CrSha256;
+    cr_sha256(&h, &tk->b[0], tk->len);
+    if (ts_saw(t, &h.b[0], 32)) { hash_seen = hash_seen + 1; }
+  }
+  tc_ok("never stored: tokens collected", g_nseen >= 10);
+  tc_rc("never stored: token text never reached the store", clear_seen, 0);
+  tc_rc("never stored: raw token bytes never reached the store", raw_seen, 0);
+  tc_rc("never stored: the store saw every token's SHA-256", hash_seen, g_nseen);
+}
+
+fn main() -> int32 {
+  test_config();
+  var c: SesConfig;
+  tf_config(&c);
+  var m: SesManager;
+  var st: SesStore;
+  var t: TsStore* = tf_manager(&m, &c, &st);
+  tc_ok("init: manager ready", m.ready);
+  test_create_lookup(&m, t);
+  test_idle(&m, t);
+  test_touch(&m, t);
+  test_absolute(&m);
+  test_rotate(&m, t);
+  test_revoke(&m);
+  test_revoke_subject(&m);
+  test_never_stored(t);
+  test_prune();
+  ses_close(&m);
+  tc_ok("close: not ready", !m.ready);
+  return tc_finish("session");
+}
