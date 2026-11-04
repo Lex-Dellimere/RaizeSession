@@ -1,0 +1,102 @@
+// Signed values: valid, tampered value, tampered signature, wrong purpose,
+// wrong key, rotated key (current + previous), malformed, buffer limits.
+
+import "std/io";
+import "std/conv";
+import "session/session";
+import "tcheck";
+import "teststore";
+import "tfix";
+
+fn signed(m: SesManager*, purpose: string, value: string, buf: uint8*, cap: int64) -> string {
+  var n: int64 = 0;
+  if (ses_sign(m, purpose, value, buf, cap, &n) != SES_OK) { return ""; }
+  return str_from_bytes((cstring)buf, n);
+}
+
+fn main() -> int32 {
+  var c: SesConfig;
+  tf_config(&c);
+  var m: SesManager;
+  var st: SesStore;
+  tf_manager(&m, &c, &st);
+  var buf: uint8[256];
+  var sv: string = signed(&m, "remember", "user:42", &buf[0], 256);
+  tc_i64("sign: length", (int64)sv.length, 7 + 44);
+  tc_ok("sign: value prefix", str_starts_with(sv, "user:42.") == 1);
+  var v: string;
+  var prev: bool = true;
+  tc_rc("verify: valid", ses_verify(&m, "remember", sv, &v, &prev), SES_OK);
+  tc_str("verify: value", v, "user:42");
+  tc_ok("verify: current key", !prev);
+  // Fixed key + fixed input = fixed output (HMAC-SHA256 is deterministic).
+  var buf2: uint8[256];
+  var sv2: string = signed(&m, "remember", "user:42", &buf2[0], 256);
+  tc_str("sign: deterministic", sv2, sv);
+  // Known answer, computed independently with Python's hmac/hashlib:
+  // HMAC-SHA256(key 01..20, le64(8) || "remember" || "user:42").
+  tc_str("sign: known answer", sv, "user:42.hwJbtw52za_UYvxbZUNKIU_xxWCJvMGpRH0M4-O3NwQ");
+  // Tampering.
+  var t1: uint8[256];
+  for i in 0..sv.length { t1[i] = sv.chars[i]; }
+  t1[6] = (uint8)'3';
+  var tv: string = str_from_bytes((cstring)&t1[0], (int64)sv.length);
+  tc_rc("verify: tampered value", ses_verify(&m, "remember", tv, &v, &prev), SES_E_INVALID);
+  tc_str("verify: no value on failure", v, "");
+  t1[6] = (uint8)'2';
+  var last: int64 = (int64)sv.length - 2;
+  if (t1[last] == (uint8)'A') { t1[last] = (uint8)'B'; } else { t1[last] = (uint8)'A'; }
+  tc_rc("verify: tampered signature", ses_verify(&m, "remember", tv, &v, &prev), SES_E_INVALID);
+  tc_rc("verify: wrong purpose", ses_verify(&m, "unsubscribe", sv, &v, &prev), SES_E_INVALID);
+  tc_rc("verify: unsigned", ses_verify(&m, "remember", "user:42", &v, &prev), SES_E_INVALID);
+  tc_rc("verify: empty", ses_verify(&m, "remember", "", &v, &prev), SES_E_INVALID);
+  tc_rc("verify: empty purpose", ses_verify(&m, "", sv, &v, &prev), SES_E_ARG);
+  // Purpose boundary: ("ab", "c") and ("a", "bc") must differ.
+  var b3: uint8[256];
+  var b4: uint8[256];
+  var x1: string = signed(&m, "ab", "c", &b3[0], 256);
+  var x2: string = signed(&m, "a", "bc", &b4[0], 256);
+  tc_ok("sign: purpose/value boundary is unambiguous", str_slice(x1, 2, 43) != str_slice(x2, 3, 43));
+  // Empty value and a value containing dots.
+  var b5: uint8[256];
+  var e: string = signed(&m, "p", "", &b5[0], 256);
+  tc_rc("verify: empty value", ses_verify(&m, "p", e, &v, &prev), SES_OK);
+  tc_str("verify: empty value read", v, "");
+  var b6: uint8[256];
+  var d: string = signed(&m, "p", "a.b.c", &b6[0], 256);
+  tc_rc("verify: dotted value", ses_verify(&m, "p", d, &v, &prev), SES_OK);
+  tc_str("verify: dotted value read", v, "a.b.c");
+  // Buffer limits.
+  var lim: uint8[64];
+  var n: int64 = 99;
+  tc_rc("sign: too small", ses_sign(&m, "p", "abc", &lim[0], 46, &n), SES_E_SPACE);
+  tc_i64("sign: nothing written", n, 0);
+  tc_rc("sign: exact fit", ses_sign(&m, "p", "abc", &lim[0], 47, &n), SES_OK);
+  // Wrong key: a manager with another key refuses.
+  var c2: SesConfig;
+  ses_config_defaults(&c2);
+  tf_key(&c2.key, 9);
+  var m2: SesManager;
+  var st2: SesStore;
+  tf_manager(&m2, &c2, &st2);
+  tc_rc("verify: wrong key", ses_verify(&m2, "remember", sv, &v, &prev), SES_E_INVALID);
+  // Rotation: new key 9 current, old key 1 previous; old values still verify.
+  var c3: SesConfig;
+  ses_config_defaults(&c3);
+  tf_key(&c3.key, 9);
+  tf_key(&c3.prev_key, 1);
+  c3.has_prev_key = true;
+  var m3: SesManager;
+  var st3: SesStore;
+  tf_manager(&m3, &c3, &st3);
+  tc_rc("rotated: old value verifies", ses_verify(&m3, "remember", sv, &v, &prev), SES_OK);
+  tc_ok("rotated: reports the previous key", prev);
+  tc_str("rotated: value", v, "user:42");
+  var b7: uint8[256];
+  var fresh: string = signed(&m3, "remember", "user:42", &b7[0], 256);
+  tc_rc("rotated: new value verifies", ses_verify(&m3, "remember", fresh, &v, &prev), SES_OK);
+  tc_ok("rotated: new value uses the current key", !prev);
+  tc_rc("rotated: old manager refuses new value", ses_verify(&m, "remember", fresh, &v, &prev), SES_E_INVALID);
+  tc_rc("rotated: used_prev may be null", ses_verify(&m3, "remember", sv, &v, (bool*)0), SES_OK);
+  return tc_finish("sign");
+}

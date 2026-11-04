@@ -9,6 +9,10 @@ import "mbuild/api";
 fn project() {
   mb_package("session_tests", "0.1.0");
   mb_bin("t_session", "t_session.mettle");
+  mb_bin("t_data", "t_data.mettle");
+  mb_bin("t_csrf", "t_csrf.mettle");
+  mb_bin("t_sign", "t_sign.mettle");
+  mb_bin("t_cookie", "t_cookie.mettle");
 }
 
 fn deps() {

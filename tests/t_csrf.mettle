@@ -1,0 +1,53 @@
+// CSRF tokens: verify ok, wrong, malformed, other session, after rotation.
+
+import "std/io";
+import "session/session";
+import "tcheck";
+import "teststore";
+import "tfix";
+
+const T0 = 1700000000;
+
+fn main() -> int32 {
+  var c: SesConfig;
+  tf_config(&c);
+  var m: SesManager;
+  var st: SesStore;
+  tf_manager(&m, &c, &st);
+  var ta: SesToken;
+  var a: SesSession;
+  var tb: SesToken;
+  var b: SesSession;
+  ses_create(&m, "alice", T0, &ta, &a);
+  ses_create(&m, "bob", T0, &tb, &b);
+  var ca: SesToken;
+  var cb: SesToken;
+  tc_rc("csrf: token a", ses_csrf_token(&a, &ca), SES_OK);
+  tc_rc("csrf: token b", ses_csrf_token(&b, &cb), SES_OK);
+  tc_i64("csrf: 43 chars", ca.len, 43);
+  tc_ok("csrf: own token verifies", ses_csrf_verify(&a, ses_token_str(&ca)));
+  tc_ok("csrf: other session's token refused", !ses_csrf_verify(&a, ses_token_str(&cb)));
+  tc_ok("csrf: b's own verifies", ses_csrf_verify(&b, ses_token_str(&cb)));
+  var wrong: SesToken = ca;
+  if (wrong.b[10] == (uint8)'Q') { wrong.b[10] = (uint8)'R'; } else { wrong.b[10] = (uint8)'Q'; }
+  tc_ok("csrf: one char changed refused", !ses_csrf_verify(&a, ses_token_str(&wrong)));
+  tc_ok("csrf: empty refused", !ses_csrf_verify(&a, ""));
+  tc_ok("csrf: junk refused", !ses_csrf_verify(&a, "not-a-token"));
+  tc_ok("csrf: session token is not the csrf token", !ses_csrf_verify(&a, ses_token_str(&ta)));
+  var bad: string = "+++++++++++++++++++++++++++++++++++++++++++";
+  tc_ok("csrf: non-base64url refused", !ses_csrf_verify(&a, bad));
+  // Survives a store round trip; changes on rotation.
+  var l: SesSession;
+  ses_lookup(&m, ses_token_str(&ta), T0 + 1, &l);
+  tc_ok("csrf: verifies after lookup", ses_csrf_verify(&l, ses_token_str(&ca)));
+  var nt: SesToken;
+  ses_rotate(&m, &l, T0 + 2, &nt);
+  tc_ok("csrf: old csrf refused after rotate", !ses_csrf_verify(&l, ses_token_str(&ca)));
+  var cn: SesToken;
+  ses_csrf_token(&l, &cn);
+  tc_ok("csrf: new csrf verifies", ses_csrf_verify(&l, ses_token_str(&cn)));
+  var dead: SesSession;
+  tc_ok("csrf: dead session refuses", !ses_csrf_verify(&dead, ses_token_str(&cn)));
+  tc_rc("csrf: dead session has no token", ses_csrf_token(&dead, &cn), SES_E_INVALID);
+  return tc_finish("csrf");
+}

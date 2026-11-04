@@ -1,0 +1,81 @@
+// Proves `import "session/session"` builds, links libsodium transitively
+// and runs: one session through a one-slot store of its own, a signed
+// value and a cookie string.
+
+import "std/io";
+import "std/conv";
+import "session/session";
+
+var g_rec: SesRecord;
+var g_used: bool = false;
+
+fn one_put(ctx: rawptr, r: SesRecord*) -> int32 {
+  g_rec = *r;
+  g_used = true;
+  return SES_OK;
+}
+
+fn one_get(ctx: rawptr, hash: uint8*, out: SesRecord*) -> int32 {
+  if (!g_used) { return SES_E_NOT_FOUND; }
+  for i in 0..32 {
+    if (g_rec.hash[i] != hash[i]) { return SES_E_NOT_FOUND; }
+  }
+  *out = g_rec;
+  return SES_OK;
+}
+
+fn one_del(ctx: rawptr, hash: uint8*) -> int32 {
+  g_used = false;
+  return SES_OK;
+}
+
+fn one_del_subject(ctx: rawptr, subject: string) -> int32 {
+  g_used = false;
+  return 1;
+}
+
+fn one_prune(ctx: rawptr, before: int64) -> int32 {
+  return 0;
+}
+
+fn main() -> int32 {
+  var st: SesStore;
+  st.put = &one_put;
+  st.get = &one_get;
+  st.del = &one_del;
+  st.del_subject = &one_del_subject;
+  st.prune = &one_prune;
+  var c: SesConfig;
+  ses_config_defaults(&c);
+  for i in 0..32 { c.key.b[i] = (uint8)(i + 1); }
+  var m: SesManager;
+  if (ses_init(&m, &c, &st) != SES_OK) { println("FAILED dependent: init"); return 1; }
+  var now: int64 = 1700000000;
+  var tok: SesToken;
+  var s: SesSession;
+  if (ses_create(&m, "u1", now, &tok, &s) != SES_OK) { println("FAILED dependent: create"); return 1; }
+  var l: SesSession;
+  if (ses_lookup(&m, ses_token_str(&tok), now + 1, &l) != SES_OK || ses_subject(&l) != "u1") {
+    println("FAILED dependent: lookup");
+    return 1;
+  }
+  var b: uint8[128];
+  var n: int64 = 0;
+  ses_sign(&m, "remember", "user:42", &b[0], 128, &n);
+  var sv: string = str_from_bytes((cstring)&b[0], n);
+  if (sv != "user:42.hwJbtw52za_UYvxbZUNKIU_xxWCJvMGpRH0M4-O3NwQ") {
+    println("FAILED dependent: sign = " + sv);
+    return 1;
+  }
+  var o: SesCookieOpts;
+  ses_cookie_defaults(&o);
+  var cb: uint8[256];
+  ses_cookie_format(&cb[0], 256, &n, "sid", ses_token_str(&tok), &o);
+  if (n != 4 + 43 + 40) {  // "sid=" + token + "; Path=/; HttpOnly; Secure; SameSite=Lax"
+    println("FAILED dependent: cookie length {n}");
+    return 1;
+  }
+  ses_close(&m);
+  println("OK dependent (create/lookup/sign/cookie via import \"session/session\")");
+  return 0;
+}
