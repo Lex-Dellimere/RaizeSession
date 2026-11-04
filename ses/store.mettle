@@ -28,8 +28,8 @@
 //   or a count >= 0 from del_subject/prune. A store must not print, exit
 //   or call back into ses_*.
 // * Threads. The library makes one store call at a time and never locks;
-//   every ses_* call that reaches the store runs on the main thread (it
-//   also calls crypto). A store shared with other threads locks inside each
+//   ses_* calls (and the crypto under them) work on any thread, so a store
+//   that is shared between threads must be thread-safe: lock inside each
 //   function.
 // * Atomicity. ses_rotate calls put(new record) then del(old hash); if del
 //   fails it deletes the new record again and reports the error. A store
@@ -45,7 +45,8 @@ import "types";
 /// returns: -
 /// owns: the application owns the SesStore and whatever ctx points to; the
 ///   library only borrows them for each call and never frees them
-/// thread: as the implementation; the library calls it from the main thread
+/// thread: as the implementation; the library calls it from whichever thread
+///   calls ses_*, so a shared store must be thread-safe
 /// example: var st: SesStore; st.ctx = (rawptr)db; st.put = &db_put; st.get = &db_get; ...
 export struct SesStore {
   ctx: rawptr;
@@ -73,7 +74,8 @@ export fn ses_store_complete(s: SesStore*) -> bool {
 /// in: s, a complete store; r, the record (r->hash decides which)
 /// returns: SES_OK, SES_E_ARG (null s or r), or the store's error
 /// owns: the store copies *r during the call
-/// thread: as the store (the library: main thread)
+/// thread: as the store (the library: any thread; a shared store must be
+///   thread-safe)
 /// example: rc = ses_store_put(&st, &s.rec);
 export fn ses_store_put(s: SesStore*, r: SesRecord*) -> int32 {
   if (s == 0 || r == 0 || s->put == 0) { return SES_E_ARG; }

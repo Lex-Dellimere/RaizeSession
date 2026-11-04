@@ -5,17 +5,17 @@ library can use it: the API is plain functions over strings, bytes and
 structs, with no HTTP request or response types and no dependency on a web
 framework.
 
-- **No cryptography in Mettle.** Every random byte, SHA-256, HMAC-SHA256,
+- **No cryptography of its own.** Every random byte, SHA-256, HMAC-SHA256,
   base64url conversion and constant-time comparison comes from the
-  [crypto](../crypto) library (libsodium).
+  [crypto](../cryptex) library (pure Mettle since cryptex 0.2.0).
 - **No storage of its own.** The application supplies a `SesStore`
   (a vtable of five functions) over its database. Built-in storage is on
   hold until the alph actor runtime is complete (reports/002).
 
 ## Requirements
 
-- The crypto library next to this one (`../crypto`), and what it needs:
-  libsodium 1.0.18+ runtime (`libsodium.so.23`), Linux x86-64.
+- The crypto library next to this one (`../cryptex`, pure Mettle: no C
+  library to install).
 - The dev Mettle compiler and mbuild 0.2.0.
 
 ## Quick start: a plain program
@@ -33,8 +33,7 @@ fn deps() {
 }
 ```
 
-No link flags: crypto's `mb_link_libs(":libsodium.so.23")` reaches your
-program through session (`tests/dependent/` proves it).
+No link flags are needed (`tests/dependent/` proves it).
 
 ```mettle
 // main.mettle
@@ -167,8 +166,8 @@ The contract (top of `src/store.mettle`):
 - **Errors:** only `SES_OK`, `SES_E_NOT_FOUND` (get/del of a missing hash),
   `SES_E_LIMIT` (full), `SES_E_STORE` (backend failure), or a count >= 0 from
   `del_subject` / `prune`. No printing, no exit, no calls back into `ses_*`.
-- **Threads:** one call at a time, from the main thread; a store shared with
-  other threads locks inside each function.
+- **Threads:** one call at a time per session; a store shared with
+  other threads must be thread-safe (lock inside each function).
 - **Rotation** is `put(new)` then `del(old)`, with `del(new)` if that fails.
 
 `tests/teststore.mettle` is a complete (test-only) example.
@@ -219,7 +218,7 @@ encoded bytes; flash 8 messages, kind 1..32, text 0..512, 1024 bytes.
 
 ## Security notes
 
-- **Tokens** are 32+ bytes from libsodium's CSPRNG, shown once, never stored:
+- **Tokens** are 32+ bytes from the crypto library's CSPRNG, shown once, never stored:
   the store sees only SHA-256 of the token (the tests assert it). A leaked
   database does not yield usable tokens.
 - **Lookups** hash the presented token, fetch by hash, then compare the
@@ -246,16 +245,30 @@ encoded bytes; flash 8 messages, kind 1..32, text 0..512, 1024 bytes.
   wipes the manager's keys; wipe your own key copies with `cr_wipe`.
 - **Concurrent requests** on one session: last write wins (reports/005).
 
-## Threads: main thread only
+## Threads: any thread
 
-Everything that calls crypto (create, lookup, rotate, CSRF, sign/verify,
-init/close) and everything that reaches the store must run on the main
-thread. Mettle may call foreign C (libsodium) only from the main thread:
-threads Mettle starts install their own thread pointer, which libc's
-`errno` and libsodium do not recognize (crypto reports/001, this
-library's reports/001). A framework with worker-thread handlers looks the
-session up on the main thread before dispatching. The data map, flash and
-cookie functions are pure Mettle and work on any thread.
+Every `ses_*` function works on any thread: the crypto library is pure
+Mettle (cryptex 0.2.0), so there is no foreign-C restriction (this
+library's reports/001 is historical). The one requirement is on the store:
+the library makes one store call at a time per session but never locks, so a
+`SesStore` shared between threads must be thread-safe. A `SesSession` is a
+plain value for one request; do not share one between threads.
+
+## Read-only views
+
+`ses_peek` is `ses_lookup` without side effects: it leaves pending flash in
+the record, never deletes an expired record, never updates `last_seen` and
+never writes. Use it where something only needs to read the session (for
+example a WebSocket page next to the user's own page request). The returned
+session is read-only: `ses_save`, `ses_touch`, `ses_set_subject` and
+`ses_rotate` refuse it with `SES_E_ARG`.
+
+## Changing the subject
+
+A session can start anonymous and gain a user at login:
+`ses_set_subject(&m, &s, uid)` then `ses_rotate(...)` (rotate on login
+anyway, against fixation). After that `ses_revoke_subject(&m, uid)` ends all
+of that user's sessions.
 
 ## Tests
 
@@ -268,14 +281,14 @@ builds `tests/` (package `session_tests`, depending on session by path) and
 `tests/dependent/`, then runs each suite:
 
 ```text
-OK session (79 checks)    config checks, create/lookup, idle + absolute expiry, touch rate limit,
-                          rotate (old token dies; rollback on store failure), revoke, revoke-all, prune,
+OK session (119 checks)    config checks, create/lookup, idle + absolute expiry, touch rate limit,
+                          rotate (old token dies; rollback on store failure), revoke, revoke-all, prune, peek (read-only), set_subject,
                           token never reaches the store in clear
 OK data (55 checks)       data map get/set/delete, every limit, persistence; flash one-shot
 OK csrf (16 checks)       own / other session / tampered / malformed / rotated
 OK sign (30 checks)       known answer (checked with Python hmac), tampering, purpose, wrong key, rotation
 OK cookie (56 checks)     exact Set-Cookie strings, clear values, strict Cookie parsing edge cases
-OK dependent (...)        a dependent with no flags of its own links libsodium and runs
+OK dependent (...)        a dependent with no flags of its own builds and runs
 ```
 
 The suites are built programs because `mbuild test` runs `@test` functions

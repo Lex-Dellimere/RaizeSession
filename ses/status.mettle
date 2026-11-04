@@ -72,7 +72,7 @@ export const SES_E_LIMIT: int32 = -7;
 /// thread: constant
 /// example: if (rc == SES_E_STORE) { return http_503(); }
 export const SES_E_STORE: int32 = -8;
-/// SES_E_CRYPTO: the crypto library failed (libsodium could not initialize).
+/// SES_E_CRYPTO: the crypto library failed (initialization or randomness).
 /// in: -
 /// returns: -9
 /// owns: nothing

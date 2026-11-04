@@ -50,7 +50,7 @@ export struct SesConfig {
 /// returns: -
 /// owns: holds a copy of the secret keys (ses_close wipes them) and borrows
 ///   the store: the store must outlive the manager
-/// thread: main thread only (its functions call crypto, reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: var m: SesManager; if (ses_init(&m, &cfg, &st) != SES_OK) { return 1; }
 export struct SesManager {
   cfg: SesConfig;
@@ -124,8 +124,7 @@ export fn ses_config_check(c: SesConfig*) -> int32 {
 ///   SES_E_CONFIG (see ses_config_check); SES_E_CRYPTO (cr_init failed).
 ///   On error m is not usable
 /// owns: m copies *c (including the keys); m borrows st, which must outlive m
-/// thread: main thread only: it calls cr_init (libsodium), and Mettle may
-///   call foreign C only from the main thread (crypto reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: var m: SesManager; if (ses_init(&m, &cfg, &st) != SES_OK) { return 1; }
 export fn ses_init(m: SesManager*, c: SesConfig*, st: SesStore*) -> int32 {
   if (m == 0 || c == 0) { return SES_E_ARG; }
@@ -144,7 +143,7 @@ export fn ses_init(m: SesManager*, c: SesConfig*, st: SesStore*) -> int32 {
 /// in: m, a manager (0 is ignored)
 /// returns: nothing
 /// owns: the store is not touched (it stays the application's)
-/// thread: main thread only (cr_wipe is a libsodium call)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: defer ses_close(&m);
 export fn ses_close(m: SesManager*) {
   if (m == 0) { return; }

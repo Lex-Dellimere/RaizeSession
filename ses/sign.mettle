@@ -49,8 +49,7 @@ fn ses_sig_tag(out: CrHmacSha256*, key: CrKey32*, purpose: string, value: string
 /// returns: SES_OK; SES_E_SPACE (nothing written); SES_E_ARG (null pointer,
 ///   manager not initialized, bad purpose length); SES_E_CRYPTO
 /// owns: out is the caller's; the tag temporaries are wiped
-/// thread: main thread only (HMAC and base64url are libsodium calls, crypto
-///   reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: var b: uint8[256]; var n: int64; ses_sign(&m, "remember", uid, &b[0], 256, &n);
 export fn ses_sign(m: SesManager*, purpose: string, value: string, out: uint8*, cap: int64, out_len: int64*) -> int32 {
   if (m == 0 || out == 0 || out_len == 0 || !m->ready) { return SES_E_ARG; }
@@ -84,7 +83,7 @@ export fn ses_sign(m: SesManager*, purpose: string, value: string, out: uint8*, 
 /// returns: SES_OK; SES_E_INVALID (tampered, wrong key, wrong purpose,
 ///   malformed; *out_value is ""); SES_E_ARG; SES_E_CRYPTO
 /// owns: *out_value is a view into signed_value; copy it to keep it
-/// thread: main thread only (HMAC and the compare are libsodium calls)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: var uid: string; var old: bool; if (ses_verify(&m, "remember", c, &uid, &old) != SES_OK) { ... }
 export fn ses_verify(m: SesManager*, purpose: string, signed_value: string, out_value: string*, used_prev: bool*) -> int32 {
   if (m == 0 || out_value == 0 || !m->ready) { return SES_E_ARG; }

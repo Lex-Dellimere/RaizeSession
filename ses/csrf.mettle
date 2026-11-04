@@ -13,7 +13,7 @@ import "types";
 /// returns: SES_OK; SES_E_INVALID (s not live); SES_E_ARG; SES_E_CRYPTO
 /// owns: writes out; the token is a secret of this session: send it only to
 ///   its own client, inside the page or response
-/// thread: main thread only (base64url is a libsodium call, crypto reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: var c: SesToken; ses_csrf_token(&s, &c); html_hidden("csrf", ses_token_str(&c));
 export fn ses_csrf_token(s: SesSession*, out: SesToken*) -> int32 {
   if (s == 0 || out == 0) { return SES_E_ARG; }
@@ -33,7 +33,7 @@ export fn ses_csrf_token(s: SesSession*, out: SesToken*) -> int32 {
 ///   wrong, malformed, other-session or rotated-away value, and for a
 ///   session that is not live (fails closed)
 /// owns: presented is borrowed; the decoded bytes are wiped
-/// thread: main thread only (libsodium calls, crypto reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: if (is_post && !ses_csrf_verify(&s, form_value("csrf"))) { return http_403(); }
 export fn ses_csrf_verify(s: SesSession*, presented: string) -> bool {
   if (s == 0 || !s->live) { return false; }

@@ -143,7 +143,8 @@ export struct SesRecord {
 
 /// SesSession: a live session for one request: the loaded record, the
 /// flash messages taken from it by the lookup, and write bookkeeping.
-/// in: - (filled by ses_create or ses_lookup; zeroed when declared)
+/// in: - (filled by ses_create, ses_lookup or ses_peek; zeroed when declared)
+///   readonly is true for a ses_peek session, which ses_save refuses
 /// returns: -
 /// owns: plain value; strings read from it (ses_subject, ses_data_get,
 ///   ses_flash_at) are views that borrow it, valid until it changes
@@ -156,6 +157,7 @@ export struct SesSession {
   saved_seen: int64;
   dirty: bool;
   live: bool;
+  readonly: bool;
 }
 
 /// Views a token's text.

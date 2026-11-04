@@ -3,6 +3,8 @@
 // revoke-all-for-subject, prune, and "the store never sees a token".
 
 import "std/io";
+import "std/mem";
+import "std/conv";
 import "session/session";
 import "tcheck";
 import "teststore";
@@ -245,6 +247,103 @@ fn test_never_stored(t: TsStore*) {
   tc_rc("never stored: the store saw every token's SHA-256", hash_seen, g_nseen);
 }
 
+// A string of n copies of byte c; the caller frees .chars.
+fn rep(c: int32, n: int64) -> string {
+  var p: uint8* = (uint8*)malloc(n + 1);
+  for i in 0..n {
+    p[i] = (uint8)c;
+  }
+  p[n] = 0;
+  return str_from_bytes((cstring)p, n);
+}
+
+fn test_peek(m: SesManager*, t: TsStore*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "peeker", T0, &tok, &s);
+  keep(&tok);
+  ses_flash_add(&s, "notice", "Saved.");
+  ses_data_set(&s, "k", "v");
+  ses_save(m, &s);
+  var p0: int32 = t->puts;
+  var p: SesSession;
+  tc_rc("peek: ok", ses_peek(m, ses_token_str(&tok), T0 + 100, &p), SES_OK);
+  tc_ok("peek: live", ses_is_live(&p));
+  tc_str("peek: subject", ses_subject(&p), "peeker");
+  var v: string;
+  tc_rc("peek: data readable", ses_data_get(&p, "k", &v), SES_OK);
+  tc_str("peek: data value", v, "v");
+  tc_rc("peek: flash not taken", ses_flash_count(&p), 0);
+  tc_i64("peek: no store write", (int64)t->puts, (int64)p0);
+  tc_rc("peek: ses_save refused", ses_save(m, &p), SES_E_ARG);
+  tc_rc("peek: ses_touch refused", ses_touch(m, &p, T0 + 200), SES_E_ARG);
+  tc_rc("peek: ses_set_subject refused", ses_set_subject(m, &p, "other"), SES_E_ARG);
+  var rt: SesToken;
+  tc_rc("peek: ses_rotate refused", ses_rotate(m, &p, T0 + 200, &rt), SES_E_ARG);
+  tc_i64("peek: still no store write", (int64)t->puts, (int64)p0);
+  var l: SesSession;
+  tc_rc("peek: lookup after", ses_lookup(m, ses_token_str(&tok), T0 + 101, &l), SES_OK);
+  tc_rc("peek: flash still there for lookup", ses_flash_count(&l), 1);
+  tc_i64("peek: last_seen untouched", l.rec.last_seen, T0);
+  tc_rc("peek: junk", ses_peek(m, "abc", T0, &p), SES_E_NOT_FOUND);
+  tc_ok("peek: failed handle not live", !ses_is_live(&p));
+
+  var te: SesToken;
+  ses_create(m, "peekexp", T0, &te, &s);
+  keep(&te);
+  var n0: int32 = ts_count(t);
+  tc_rc("peek: expired", ses_peek(m, ses_token_str(&te), T0 + 1800, &p), SES_E_EXPIRED);
+  tc_i64("peek: expired record left", (int64)ts_count(t), (int64)n0);
+  tc_rc("peek: expired again (not deleted)", ses_peek(m, ses_token_str(&te), T0 + 1801, &p), SES_E_EXPIRED);
+  tc_rc("peek: lookup then deletes it", ses_lookup(m, ses_token_str(&te), T0 + 1801, &l), SES_E_EXPIRED);
+  tc_i64("peek: lookup deleted the record", (int64)ts_count(t), (int64)(n0 - 1));
+
+  var tr: SesToken;
+  ses_create(m, "peekrev", T0, &tr, &s);
+  keep(&tr);
+  ses_revoke(m, &s);
+  tc_rc("peek: revoked", ses_peek(m, ses_token_str(&tr), T0 + 1, &p), SES_E_REVOKED);
+}
+
+fn test_set_subject(m: SesManager*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "anon", T0, &tok, &s);
+  keep(&tok);
+  tc_rc("set_subject: empty refused", ses_set_subject(m, &s, ""), SES_E_ARG);
+  var big: string = rep(120, (int64)SES_SUBJECT_CAP + 1);
+  tc_rc("set_subject: oversized refused", ses_set_subject(m, &s, big), SES_E_ARG);
+  tc_str("set_subject: unchanged after refusal", ses_subject(&s), "anon");
+  var edge: string = rep(121, (int64)SES_SUBJECT_CAP);
+  tc_rc("set_subject: max length ok", ses_set_subject(m, &s, edge), SES_OK);
+  tc_rc("set_subject: user", ses_set_subject(m, &s, "dave"), SES_OK);
+  tc_str("set_subject: live value", ses_subject(&s), "dave");
+  var dead: SesSession;
+  tc_rc("set_subject: not live", ses_set_subject(m, &dead, "x"), SES_E_INVALID);
+  tc_rc("set_subject: save", ses_save(m, &s), SES_OK);
+  var l: SesSession;
+  ses_lookup(m, ses_token_str(&tok), T0 + 1, &l);
+  tc_str("set_subject: persisted", ses_subject(&l), "dave");
+  var t2: SesToken;
+  ses_create(m, "dave", T0, &t2, &s);
+  keep(&t2);
+  tc_rc("set_subject: revoke_subject reaches both", ses_revoke_subject(m, "dave"), 2);
+  tc_rc("set_subject: session gone", ses_lookup(m, ses_token_str(&tok), T0 + 2, &l), SES_E_NOT_FOUND);
+  tc_rc("set_subject: anon gone from old subject", ses_revoke_subject(m, "anon"), 0);
+  // Login flow: set subject, rotate.
+  var ta: SesToken;
+  var nt: SesToken;
+  ses_create(m, "anon2", T0, &ta, &s);
+  keep(&ta);
+  ses_set_subject(m, &s, "erin");
+  tc_rc("set_subject: rotate", ses_rotate(m, &s, T0 + 5, &nt), SES_OK);
+  keep(&nt);
+  tc_rc("set_subject: old token dead", ses_lookup(m, ses_token_str(&ta), T0 + 6, &l), SES_E_NOT_FOUND);
+  tc_rc("set_subject: new token", ses_lookup(m, ses_token_str(&nt), T0 + 6, &l), SES_OK);
+  tc_str("set_subject: rotated subject", ses_subject(&l), "erin");
+  tc_rc("set_subject: revoke erin", ses_revoke_subject(m, "erin"), 1);
+}
+
 fn main() -> int32 {
   test_config();
   var c: SesConfig;
@@ -260,6 +359,8 @@ fn main() -> int32 {
   test_rotate(&m, t);
   test_revoke(&m);
   test_revoke_subject(&m);
+  test_peek(&m, t);
+  test_set_subject(&m);
   test_never_stored(t);
   test_prune();
   ses_close(&m);

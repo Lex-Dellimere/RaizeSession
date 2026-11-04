@@ -1,6 +1,6 @@
 # 001: Everything that calls crypto is main-thread only
 
-**Kind:** Mettle interop limit, inherited from crypto. **Status:** open, documented.
+**Kind:** Mettle interop limit, inherited from crypto. **Status:** fixed: crypto is pure Mettle since cryptex 0.2.0; every `ses_*` call is any-thread (a shared store must be thread-safe). The text below is historical.
 
 Every random byte, SHA-256, HMAC-SHA256, base64url conversion,
 constant-time comparison and wipe in this library is a call into the crypto

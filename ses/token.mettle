@@ -1,5 +1,5 @@
 // Opaque tokens: generation, validation and hashing. A session token is
-// base64url (no padding) of token_bytes random bytes from libsodium; the
+// base64url (no padding) of token_bytes random bytes from the crypto library (cryptex); the
 // store only ever receives SHA-256 of the token text. All of it is crypto
 // library calls: cr_random_bytes, cr_base64url_encode/_decode, cr_sha256,
 // cr_wipe.
@@ -12,7 +12,7 @@ import "types";
 /// in: t, a token (0 is ignored)
 /// returns: nothing
 /// owns: nothing; t stays the caller's
-/// thread: main thread only (cr_wipe is a libsodium call, crypto reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: defer ses_token_wipe(&t);
 export fn ses_token_wipe(t: SesToken*) {
   if (t == 0) { return; }
@@ -26,7 +26,7 @@ export fn ses_token_wipe(t: SesToken*) {
 /// returns: SES_OK; SES_E_ARG (null pointer, nbytes outside 32..64);
 ///   SES_E_CRYPTO (the crypto library failed; out is wiped)
 /// owns: writes out and hash; the raw random bytes are wiped before return
-/// thread: main thread only (libsodium calls, crypto reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: var t: SesToken; var h: CrSha256; ses_token_new(32, &t, &h);
 export fn ses_token_new(nbytes: int64, out: SesToken*, hash: CrSha256*) -> int32 {
   if (out == 0 || hash == 0 || nbytes < 32 || nbytes > 64) { return SES_E_ARG; }
@@ -54,7 +54,7 @@ export fn ses_token_new(nbytes: int64, out: SesToken*, hash: CrSha256*) -> int32
 /// returns: SES_OK; SES_E_NOT_FOUND for a malformed token (the same answer
 ///   as an unknown one); SES_E_ARG (null hash); SES_E_CRYPTO
 /// owns: tok is borrowed; the decoded bytes are wiped
-/// thread: main thread only (libsodium calls, crypto reports/001)
+/// thread: any thread (pure Mettle crypto, cryptex 0.2.0)
 /// example: var h: CrSha256; if (ses_token_hash(cookie, &h) != SES_OK) { login(); }
 export fn ses_token_hash(tok: string, hash: CrSha256*) -> int32 {
   if (hash == 0) { return SES_E_ARG; }

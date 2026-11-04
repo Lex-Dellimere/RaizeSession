@@ -15,7 +15,8 @@
 //   store      SesStore vtable (the storage contract), ses_store_*, ses_record_*
 //   config     SesConfig, SesManager, ses_config_defaults/_check, ses_init, ses_close
 //   token      ses_token_new, ses_token_hash, ses_token_wipe
-//   lifecycle  ses_create, ses_lookup, ses_touch, ses_save, ses_subject, ses_max_age
+//   lifecycle  ses_create, ses_lookup, ses_peek, ses_touch, ses_save, ses_subject,
+//              ses_set_subject, ses_max_age
 //   admin      ses_rotate, ses_needs_rotation, ses_revoke, ses_revoke_token,
 //              ses_revoke_subject, ses_prune
 //   data       ses_data_get/_set/_del/_count, ses_flash_add/_count/_at
