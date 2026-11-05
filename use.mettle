@@ -13,7 +13,7 @@
 
 import "std/mem";
 import "ses/session";
-import "crypto/crypto";
+import "cryptex/cryptex";
 import "raize_core/str/str";
 import "raize_core/core/status";
 import "raize_core/context/request";

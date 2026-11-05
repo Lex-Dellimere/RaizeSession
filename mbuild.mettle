@@ -5,7 +5,7 @@ import "mbuild/api";
 // not depend on it. Part of raize (https://github.com/Lex-Dellimere/RaizeWeb). Library
 // only, no bins.
 fn project() {
-  mb_package("raize_session", "0.1.0");
+  mb_package("raize_session", "0.2.1");
   mb_meta("description", "raize sessions: cookie middleware, CSRF guard, flash and Signal reads over the session library");
   mb_meta("license", "Apache-2.0");
 }
@@ -15,7 +15,7 @@ fn project() {
 fn deps() {
   mb_dep_path("raize_app", "../app");
   mb_dep_path("raize_core", "../core");
-  mb_dep_path("crypto", "../../../cryptex");
+  mb_dep_path("cryptex", "../../../cryptex");
 }
 
 // test-programs: build the test package (tests/) and the minimal dependent

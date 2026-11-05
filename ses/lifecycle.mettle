@@ -10,7 +10,7 @@
 
 import "std/mem";
 import "std/conv";
-import "crypto/crypto";
+import "cryptex/cryptex";
 import "status";
 import "types";
 import "store";

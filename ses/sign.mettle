@@ -9,7 +9,7 @@
 // cfg.has_prev_key, and reports which one matched so the caller can re-sign.
 
 import "std/conv";
-import "crypto/crypto";
+import "cryptex/cryptex";
 import "status";
 import "types";
 import "config";

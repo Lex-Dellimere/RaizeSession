@@ -3,7 +3,7 @@
 // in forms or a request header; verify what comes back. Nothing extra to
 // store: it travels with the session and changes on ses_rotate.
 
-import "crypto/crypto";
+import "cryptex/cryptex";
 import "status";
 import "types";
 

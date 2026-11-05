@@ -12,7 +12,7 @@
 // The secret keys start zeroed; ses_config_check refuses a zero key, so an
 // application cannot forget to set one.
 
-import "crypto/crypto";
+import "cryptex/cryptex";
 import "status";
 import "types";
 import "store";
