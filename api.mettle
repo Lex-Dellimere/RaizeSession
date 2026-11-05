@@ -10,7 +10,7 @@
 // rz_flash_put, rz_csrf_token, rz_session_rotate); the middleware then sets the
 // cookie. Values are saved after the handler returns.
 
-import "session/session";
+import "ses/session";
 import "raize_core/str/str";
 import "raize_core/core/status";
 import "raize_core/context/arena";

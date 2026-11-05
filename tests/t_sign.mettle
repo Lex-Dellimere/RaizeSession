@@ -3,7 +3,7 @@
 
 import "std/io";
 import "std/conv";
-import "session/session";
+import "raize_session/ses/session";
 import "tcheck";
 import "teststore";
 import "tfix";

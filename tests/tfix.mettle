@@ -1,7 +1,7 @@
 // Test fixture: a config with a fixed, non-zero key and a manager bound to
 // a fresh test store. Test-only.
 
-import "session/session";
+import "raize_session/ses/session";
 import "teststore";
 
 // Fills k with bytes seed, seed+1, ... (never all zero for seed >= 1).

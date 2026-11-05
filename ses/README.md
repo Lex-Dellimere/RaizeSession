@@ -1,4 +1,4 @@
-# session
+# ses: the session core of RaizeSession
 
 Framework-agnostic session handling for Mettle. Any program, framework or
 library can use it: the API is plain functions over strings, bytes and
@@ -29,7 +29,7 @@ fn project() {
 }
 
 fn deps() {
-  mb_dep_path("session", "../session");
+  mb_dep_path("raize_session", "../raize_web/libs/session");
 }
 ```
 
@@ -38,7 +38,7 @@ No link flags are needed (`tests/dependent/` proves it).
 ```mettle
 // main.mettle
 import "std/io";
-import "session/session";      // also brings crypto's cr_* functions
+import "raize_session/ses/session";   // also brings crypto's cr_* functions
 
 fn main() -> int32 {
   var st: SesStore;

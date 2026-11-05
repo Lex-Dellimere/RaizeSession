@@ -7,7 +7,7 @@
 
 import "std/mem";
 import "std/conv";
-import "session/session";
+import "raize_session/ses/session";
 
 const TS_CAP = 64;
 const TS_LOG_CAP = 512;

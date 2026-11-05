@@ -1,7 +1,7 @@
 // CSRF tokens: verify ok, wrong, malformed, other session, after rotation.
 
 import "std/io";
-import "session/session";
+import "raize_session/ses/session";
 import "tcheck";
 import "teststore";
 import "tfix";

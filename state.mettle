@@ -8,7 +8,7 @@
 // called from every worker, the hub thread and the timer thread: it must lock.
 
 import "std/mem";
-import "session/session";
+import "ses/session";
 import "raize_core/str/str";
 import "raize_core/core/status";
 import "raize_core/context/arena";

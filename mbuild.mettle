@@ -11,10 +11,62 @@ fn project() {
 }
 
 // Path dependencies on the other packages under raize_web/libs until the registry has them.
-// `session` brings `crypto` (cryptex) transitively.
+// The session core (ses/) uses crypto from cryptex, checked out next to raize_web.
 fn deps() {
   mb_dep_path("raize_app", "../app");
   mb_dep_path("raize_core", "../core");
-  mb_dep_path("session", "../../../session");
   mb_dep_path("crypto", "../../../cryptex");
+}
+
+// test-programs: build the test package (tests/) and the minimal dependent
+// (tests/dependent/) with mbuild in debug and release, then run every
+// suite. Each suite prints one "OK <suite>" line.
+//
+// Both directories are packages that depend on raize_session by path, so
+// building them also proves the ses_ core is importable from outside as
+// `raize_session/ses/session`.
+//   mbuild test-programs              both profiles
+//   mbuild test-programs --debug      debug only
+//   mbuild test-programs --release    release only
+fn cmd_test_programs(a: MbArgs*) -> int32 {
+  var mbuild: string = mb_env("MBUILD_EXE");
+  if (mbuild == "") { mbuild = "mbuild"; }
+  var suites: string[5] = ["t_session", "t_data", "t_csrf", "t_sign", "t_cookie"];
+  var profiles: string[2] = ["debug", "release"];
+  var failed: int32 = 0;
+  for pi in 0..2 {
+    var prof: string = profiles[pi];
+    if (prof == "debug" && mb_flag(a, "--release")) { continue; }
+    if (prof == "release" && mb_flag(a, "--debug")) { continue; }
+    mb_say("== " + prof);
+    var dirs: string[2] = ["tests", "tests/dependent"];
+    for di in 0..2 {
+      var b: MbCmd* = mb_cmd(mbuild);
+      mb_cmd_arg(b, "build");
+      if (prof == "release") { mb_cmd_arg(b, "-r"); }
+      mb_cmd_cwd(b, mb_root() + "/" + dirs[di]);
+      if (mb_cmd_run(b) != 0) {
+        mb_warn(dirs[di] + " does not build (" + prof + ")");
+        failed = failed + 1;
+      }
+    }
+    for i in 0..5 {
+      var r: MbCmd* = mb_cmd(mb_root() + "/tests/build/linux/" + prof + "/" + suites[i]);
+      if (mb_cmd_run(r) != 0) {
+        mb_warn(suites[i] + " failed (" + prof + ")");
+        failed = failed + 1;
+      }
+    }
+    var dr: MbCmd* = mb_cmd(mb_root() + "/tests/dependent/build/linux/" + prof + "/raize_session_dependent");
+    if (mb_cmd_run(dr) != 0) {
+      mb_warn("tests/dependent failed (" + prof + ")");
+      failed = failed + 1;
+    }
+  }
+  if (failed > 0) {
+    mb_say("test-programs: FAILED ({failed})");
+    return 1;
+  }
+  mb_say("test-programs: ok");
+  return 0;
 }

@@ -7,7 +7,7 @@ import "mbuild/api";
 //
 // teststore.mettle is a TEST-ONLY SesStore; the library has no storage.
 fn project() {
-  mb_package("session_tests", "0.1.0");
+  mb_package("raize_session_tests", "0.1.0");
   mb_bin("t_session", "t_session.mettle");
   mb_bin("t_data", "t_data.mettle");
   mb_bin("t_csrf", "t_csrf.mettle");
@@ -16,5 +16,5 @@ fn project() {
 }
 
 fn deps() {
-  mb_dep_path("session", "..");
+  mb_dep_path("raize_session", "..");
 }

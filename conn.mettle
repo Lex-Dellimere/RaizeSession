@@ -5,7 +5,7 @@
 // SesStore, which must be thread-safe.
 
 import "std/mem";
-import "session/session";
+import "ses/session";
 import "raize_core/str/str";
 import "raize_core/context/conn";
 import "state";

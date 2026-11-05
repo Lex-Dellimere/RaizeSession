@@ -4,7 +4,7 @@
 
 import "std/io";
 import "std/conv";
-import "session/session";
+import "raize_session/ses/session";
 
 var g_rec: SesRecord;
 var g_used: bool = false;
@@ -76,6 +76,6 @@ fn main() -> int32 {
     return 1;
   }
   ses_close(&m);
-  println("OK dependent (create/lookup/sign/cookie via import \"session/session\")");
+  println("OK dependent (create/lookup/sign/cookie via import \"raize_session/ses/session\")");
   return 0;
 }

@@ -12,7 +12,7 @@
 // A WebSocket upgrade (an Upgrade header) uses ses_peek instead: read-only, no flash taken.
 
 import "std/mem";
-import "session/session";
+import "ses/session";
 import "crypto/crypto";
 import "raize_core/str/str";
 import "raize_core/core/status";
