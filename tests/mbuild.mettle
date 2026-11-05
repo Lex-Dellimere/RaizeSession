@@ -1,0 +1,20 @@
+import "mbuild/api";
+
+// Test programs for session. They are a separate package that depends on
+// session by path (and so on crypto transitively), because the suites call
+// libsodium through crypto, which the `mbuild test` interpreter cannot do.
+// Run them from the session root with `mbuild test-programs`.
+//
+// teststore.mettle is a TEST-ONLY SesStore; the library has no storage.
+fn project() {
+  mb_package("session_tests", "0.1.0");
+  mb_bin("t_session", "t_session.mettle");
+  mb_bin("t_data", "t_data.mettle");
+  mb_bin("t_csrf", "t_csrf.mettle");
+  mb_bin("t_sign", "t_sign.mettle");
+  mb_bin("t_cookie", "t_cookie.mettle");
+}
+
+fn deps() {
+  mb_dep_path("session", "..");
+}

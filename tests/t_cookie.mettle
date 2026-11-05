@@ -1,0 +1,127 @@
+// Cookie strings: exact Set-Cookie formats, clear values, option checks,
+// and strict Cookie header parsing (spaces, quotes, duplicates, missing).
+
+import "std/io";
+import "std/conv";
+import "session/session";
+import "tcheck";
+
+var g_buf: uint8[512];
+
+fn fmt(name: string, value: string, o: SesCookieOpts*) -> string {
+  var n: int64 = 0;
+  var rc: int32 = ses_cookie_format(&g_buf[0], 512, &n, name, value, o);
+  if (rc != SES_OK) { return "rc {rc}"; }
+  return str_from_bytes((cstring)&g_buf[0], n);
+}
+
+fn clr(name: string, o: SesCookieOpts*) -> string {
+  var n: int64 = 0;
+  var rc: int32 = ses_cookie_clear(&g_buf[0], 512, &n, name, o);
+  if (rc != SES_OK) { return "rc {rc}"; }
+  return str_from_bytes((cstring)&g_buf[0], n);
+}
+
+// Finds name in h; returns "rc N" on error, else "=value".
+fn find(h: string, name: string) -> string {
+  var v: string;
+  var rc: int32 = ses_cookie_find(h, name, &v);
+  if (rc != SES_OK) { return "rc {rc}"; }
+  return "=" + v;
+}
+
+fn test_format() {
+  var o: SesCookieOpts;
+  ses_cookie_defaults(&o);
+  tc_str("format: defaults", fmt("sid", "abc", &o), "sid=abc; Path=/; HttpOnly; Secure; SameSite=Lax");
+  o.max_age = 28800;
+  tc_str("format: max-age", fmt("sid", "abc", &o), "sid=abc; Path=/; Max-Age=28800; HttpOnly; Secure; SameSite=Lax");
+  o.max_age = 0;
+  tc_str("format: max-age 0", fmt("sid", "abc", &o), "sid=abc; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
+  o.max_age = -1;
+  o.same_site = SES_SAMESITE_STRICT;
+  o.domain = "example.com";
+  o.path = "/app";
+  tc_str("format: strict, domain, path", fmt("sid", "abc", &o), "sid=abc; Path=/app; Domain=example.com; HttpOnly; Secure; SameSite=Strict");
+  ses_cookie_defaults(&o);
+  o.secure = false;
+  o.http_only = false;
+  tc_str("format: no flags (local dev)", fmt("pref", "dark", &o), "pref=dark; Path=/; SameSite=Lax");
+  o.same_site = SES_SAMESITE_NONE;
+  tc_str("format: SameSite=None needs Secure", fmt("x", "1", &o), "rc -1");
+  o.secure = true;
+  tc_str("format: SameSite=None + Secure", fmt("x", "1", &o), "x=1; Path=/; Secure; SameSite=None");
+  ses_cookie_defaults(&o);
+  o.path = "";
+  tc_str("format: no path", fmt("a", "", &o), "a=; HttpOnly; Secure; SameSite=Lax");
+  ses_cookie_defaults(&o);
+  tc_str("format: space in value", fmt("sid", "a b", &o), "rc -1");
+  tc_str("format: semicolon in value", fmt("sid", "a;b", &o), "rc -1");
+  tc_str("format: quote in value", fmt("sid", "a\"b", &o), "rc -1");
+  tc_str("format: bad name", fmt("s id", "a", &o), "rc -1");
+  tc_str("format: empty name", fmt("", "a", &o), "rc -1");
+  tc_str("format: name with =", fmt("a=b", "a", &o), "rc -1");
+  o.path = "/a;b";
+  tc_str("format: path with ;", fmt("sid", "a", &o), "rc -1");
+  o.path = "app";
+  tc_str("format: relative path", fmt("sid", "a", &o), "rc -1");
+  ses_cookie_defaults(&o);
+  o.same_site = 7;
+  tc_str("format: unknown SameSite", fmt("sid", "a", &o), "rc -1");
+  ses_cookie_defaults(&o);
+  var n: int64 = 5;
+  tc_rc("format: too small", ses_cookie_format(&g_buf[0], 10, &n, "sid", "abc", &o), SES_E_SPACE);
+  tc_i64("format: nothing reported", n, 0);
+  var want: string = "sid=abc; Path=/; HttpOnly; Secure; SameSite=Lax";
+  tc_rc("format: exact fit", ses_cookie_format(&g_buf[0], (int64)want.length, &n, "sid", "abc", &o), SES_OK);
+  tc_rc("format: one short", ses_cookie_format(&g_buf[0], (int64)want.length - 1, &n, "sid", "abc", &o), SES_E_SPACE);
+  // Clear.
+  ses_cookie_defaults(&o);
+  o.max_age = 500;
+  tc_str("clear: defaults", clr("sid", &o), "sid=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
+  o.domain = "example.com";
+  tc_str("clear: same domain", clr("sid", &o), "sid=; Path=/; Domain=example.com; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
+  tc_str("clear: bad name", clr("s;d", &o), "rc -1");
+}
+
+fn test_find() {
+  tc_str("find: single", find("sid=abc", "sid"), "=abc");
+  tc_str("find: among others", find("a=1; sid=abc; b=2", "sid"), "=abc");
+  tc_str("find: last", find("a=1; sid=abc", "sid"), "=abc");
+  tc_str("find: missing", find("a=1; b=2", "sid"), "rc -3");
+  tc_str("find: empty header", find("", "sid"), "rc -3");
+  tc_str("find: only spaces", find("   ", "sid"), "rc -3");
+  tc_str("find: outer whitespace ok", find(" \tsid=abc\t ", "sid"), "=abc");
+  tc_str("find: empty value", find("sid=; a=1", "sid"), "=");
+  tc_str("find: quoted value", find("sid=\"abc\"; a=1", "sid"), "=abc");
+  tc_str("find: empty quoted", find("sid=\"\"", "sid"), "=");
+  tc_str("find: unterminated quote", find("sid=\"abc", "sid"), "rc -10");
+  tc_str("find: quote inside", find("sid=a\"b", "sid"), "rc -10");
+  tc_str("find: case-sensitive name", find("SID=abc", "sid"), "rc -3");
+  tc_str("find: prefix name is not a match", find("sidx=1; xsid=2", "sid"), "rc -3");
+  tc_str("find: duplicate", find("sid=a; sid=b", "sid"), "rc -11");
+  tc_str("find: duplicate of another name ok", find("a=1; a=2; sid=x", "sid"), "=x");
+  tc_str("find: space in value", find("sid=a b", "sid"), "rc -10");
+  tc_str("find: space before =", find("sid =abc", "sid"), "rc -10");
+  tc_str("find: space after =", find("sid= abc", "sid"), "rc -10");
+  tc_str("find: no space after ;", find("a=1;sid=abc", "sid"), "rc -10");
+  tc_str("find: two spaces after ;", find("a=1;  sid=abc", "sid"), "rc -10");
+  tc_str("find: trailing ;", find("sid=abc;", "sid"), "rc -10");
+  tc_str("find: trailing ; space", find("sid=abc; ", "sid"), "rc -10");
+  tc_str("find: no =", find("sid", "sid"), "rc -10");
+  tc_str("find: empty name", find("=abc", "sid"), "rc -10");
+  tc_str("find: comma separator", find("a=1, sid=abc", "sid"), "rc -10");
+  tc_str("find: malformed after match", find("sid=abc; bad", "sid"), "rc -10");
+  tc_str("find: = in value", find("sid=a=b", "sid"), "=a=b");
+  tc_str("find: base64url token", find("sid=hwJbtw52za_UYvxbZUNKIU_xxWCJvMGpRH0M4-O3NwQ", "sid"), "=hwJbtw52za_UYvxbZUNKIU_xxWCJvMGpRH0M4-O3NwQ");
+  var v: string;
+  tc_rc("find: invalid name arg", ses_cookie_find("a=1", "a b", &v), SES_E_ARG);
+}
+
+fn main() -> int32 {
+  test_format();
+  test_find();
+  tc_ok("name_ok: token", ses_cookie_name_ok("__Host-sid"));
+  tc_ok("value_ok: backslash refused", !ses_cookie_value_ok("a\\b"));
+  return tc_finish("cookie");
+}

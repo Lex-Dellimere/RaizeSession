@@ -1,0 +1,156 @@
+// TEST-ONLY SesStore: a fixed array of records plus a log of every byte
+// the library ever handed to the store (each put record, each hash given
+// to get/del, each subject given to del_subject). It exists so the suites
+// can run and can assert that a token never reaches the store in clear.
+// It is NOT part of the library and is not exported by it: the session
+// package has no storage of its own (see README, "Storage").
+
+import "std/mem";
+import "std/conv";
+import "session/session";
+
+const TS_CAP = 64;
+const TS_LOG_CAP = 512;
+
+export struct TsStore {
+  recs: SesRecord*;
+  used: bool[64];
+  log: SesRecord*;
+  nlog: int32;
+  keys: uint8*;
+  nkeys: int32;
+  puts: int32;
+  gets: int32;
+  dels: int32;
+  fail_del: bool;
+}
+
+fn ts_find(t: TsStore*, hash: uint8*) -> int32 {
+  for i in 0..TS_CAP {
+    if (t->used[i] && memcmp((rawptr)&t->recs[i].hash[0], (rawptr)hash, 32) == 0) { return i; }
+  }
+  return -1;
+}
+
+fn ts_log_key(t: TsStore*, p: uint8*, n: int64) {
+  if (t->nkeys >= TS_LOG_CAP || n > 256) { return; }
+  memcpy(&t->keys[(int64)t->nkeys * 256], p, n);
+  t->nkeys = t->nkeys + 1;
+}
+
+fn ts_put(ctx: rawptr, r: SesRecord*) -> int32 {
+  var t: TsStore* = (TsStore*)ctx;
+  t->puts = t->puts + 1;
+  if (t->nlog < TS_LOG_CAP) {
+    t->log[t->nlog] = *r;
+    t->nlog = t->nlog + 1;
+  }
+  var i: int32 = ts_find(t, &r->hash[0]);
+  if (i < 0) {
+    for j in 0..TS_CAP {
+      if (i < 0 && !t->used[j]) { i = j; }
+    }
+  }
+  if (i < 0) { return SES_E_LIMIT; }
+  t->recs[i] = *r;
+  t->used[i] = true;
+  return SES_OK;
+}
+
+fn ts_get(ctx: rawptr, hash: uint8*, out: SesRecord*) -> int32 {
+  var t: TsStore* = (TsStore*)ctx;
+  t->gets = t->gets + 1;
+  ts_log_key(t, hash, 32);
+  var i: int32 = ts_find(t, hash);
+  if (i < 0) { return SES_E_NOT_FOUND; }
+  *out = t->recs[i];
+  return SES_OK;
+}
+
+fn ts_del(ctx: rawptr, hash: uint8*) -> int32 {
+  var t: TsStore* = (TsStore*)ctx;
+  t->dels = t->dels + 1;
+  ts_log_key(t, hash, 32);
+  if (t->fail_del) { return SES_E_STORE; }
+  var i: int32 = ts_find(t, hash);
+  if (i < 0) { return SES_E_NOT_FOUND; }
+  t->used[i] = false;
+  return SES_OK;
+}
+
+fn ts_del_subject(ctx: rawptr, subject: string) -> int32 {
+  var t: TsStore* = (TsStore*)ctx;
+  ts_log_key(t, subject.chars, (int64)subject.length);
+  var n: int32 = 0;
+  for i in 0..TS_CAP {
+    if (t->used[i] && ses_record_subject(&t->recs[i]) == subject) {
+      t->used[i] = false;
+      n = n + 1;
+    }
+  }
+  return n;
+}
+
+fn ts_prune(ctx: rawptr, before: int64) -> int32 {
+  var t: TsStore* = (TsStore*)ctx;
+  var n: int32 = 0;
+  for i in 0..TS_CAP {
+    if (t->used[i] && (t->recs[i].revoked != 0 || t->recs[i].expires <= before)) {
+      t->used[i] = false;
+      n = n + 1;
+    }
+  }
+  return n;
+}
+
+// A fresh test store; never freed (test programs exit).
+export fn ts_new() -> TsStore* {
+  var t: TsStore* = new TsStore;
+  t->recs = (SesRecord*)calloc((int64)TS_CAP, sizeof(SesRecord));
+  t->log = (SesRecord*)calloc((int64)TS_LOG_CAP, sizeof(SesRecord));
+  t->keys = (uint8*)calloc((int64)TS_LOG_CAP, 256);
+  return t;
+}
+
+// Fills a SesStore vtable that points at t.
+export fn ts_bind(t: TsStore*, s: SesStore*) {
+  s->ctx = (rawptr)t;
+  s->put = &ts_put;
+  s->get = &ts_get;
+  s->del = &ts_del;
+  s->del_subject = &ts_del_subject;
+  s->prune = &ts_prune;
+}
+
+export fn ts_count(t: TsStore*) -> int32 {
+  var n: int32 = 0;
+  for i in 0..TS_CAP {
+    if (t->used[i]) { n = n + 1; }
+  }
+  return n;
+}
+
+fn ts_mem_has(hay: uint8*, hn: int64, p: uint8*, n: int64) -> bool {
+  if (n <= 0 || n > hn) { return false; }
+  var last: int64 = hn - n;
+  var i: int64 = 0;
+  while (i <= last) {
+    if (hay[i] == p[0] && memcmp((rawptr)&hay[i], (rawptr)p, n) == 0) { return true; }
+    i = i + 1;
+  }
+  return false;
+}
+
+// True if the n bytes at p occur anywhere the store ever saw: a put
+// record (whole struct), a live record, a logged hash or subject.
+export fn ts_saw(t: TsStore*, p: uint8*, n: int64) -> bool {
+  var rs: int64 = sizeof(SesRecord);
+  for i in 0..t->nlog {
+    if (ts_mem_has((uint8*)&t->log[i], rs, p, n)) { return true; }
+  }
+  for j in 0..TS_CAP {
+    if (ts_mem_has((uint8*)&t->recs[j], rs, p, n)) { return true; }
+  }
+  if (ts_mem_has(t->keys, (int64)t->nkeys * 256, p, n)) { return true; }
+  return false;
+}

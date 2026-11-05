@@ -1,0 +1,143 @@
+// Session data map (get/set/delete, limits, persistence through the store)
+// and one-shot flash messages.
+
+import "std/io";
+import "std/mem";
+import "std/conv";
+import "session/session";
+import "tcheck";
+import "teststore";
+import "tfix";
+
+const T0 = 1700000000;
+
+// A string of n copies of byte c; the caller frees .chars.
+fn rep(c: int32, n: int64) -> string {
+  var p: uint8* = (uint8*)malloc(n + 1);
+  for i in 0..n {
+    p[i] = (uint8)c;
+  }
+  p[n] = 0;
+  return str_from_bytes((cstring)p, n);
+}
+
+fn test_data(m: SesManager*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "dana", T0, &tok, &s);
+  var v: string;
+  tc_rc("data: missing key", ses_data_get(&s, "cart", &v), SES_E_NOT_FOUND);
+  tc_rc("data: set", ses_data_set(&s, "cart", "42"), SES_OK);
+  tc_rc("data: get", ses_data_get(&s, "cart", &v), SES_OK);
+  tc_str("data: value", v, "42");
+  tc_rc("data: replace", ses_data_set(&s, "cart", "43"), SES_OK);
+  ses_data_get(&s, "cart", &v);
+  tc_str("data: replaced value", v, "43");
+  tc_rc("data: count after replace", ses_data_count(&s), 1);
+  tc_rc("data: empty value", ses_data_set(&s, "e", ""), SES_OK);
+  ses_data_get(&s, "e", &v);
+  tc_i64("data: empty value read", (int64)v.length, 0);
+  tc_rc("data: empty key", ses_data_set(&s, "", "x"), SES_E_ARG);
+  var k64: string = rep(107, 64);
+  var k65: string = rep(107, 65);
+  var v1024: string = rep(118, 1024);
+  var v1025: string = rep(118, 1025);
+  tc_rc("data: 64-byte key ok", ses_data_set(&s, k64, "x"), SES_OK);
+  tc_rc("data: 65-byte key refused", ses_data_set(&s, k65, "x"), SES_E_LIMIT);
+  tc_rc("data: 1024-byte value ok", ses_data_set(&s, "big", v1024), SES_OK);
+  tc_rc("data: 1025-byte value refused", ses_data_set(&s, "big2", v1025), SES_E_LIMIT);
+  tc_rc("data: del", ses_data_del(&s, "big"), SES_OK);
+  tc_rc("data: del missing", ses_data_del(&s, "big"), SES_E_NOT_FOUND);
+  tc_rc("data: get after del", ses_data_get(&s, "big", &v), SES_E_NOT_FOUND);
+  ses_data_get(&s, "cart", &v);
+  tc_str("data: other key intact after del", v, "43");
+  tc_rc("data: save", ses_save(m, &s), SES_OK);
+  var l: SesSession;
+  tc_rc("data: lookup", ses_lookup(m, ses_token_str(&tok), T0 + 5, &l), SES_OK);
+  tc_rc("data: persisted", ses_data_get(&l, "cart", &v), SES_OK);
+  tc_str("data: persisted value", v, "43");
+  tc_rc("data: persisted count", ses_data_count(&l), 3);
+  // Entry limit: 32 keys.
+  var t2: SesToken;
+  var s2: SesSession;
+  ses_create(m, "many", T0, &t2, &s2);
+  var all_ok: bool = true;
+  for i in 0..32 {
+    var key: string = "key{i}";
+    if (ses_data_set(&s2, key, "v") != SES_OK) { all_ok = false; }
+    free(key.chars);
+  }
+  tc_ok("data: 32 keys fit", all_ok);
+  tc_rc("data: 33rd key refused", ses_data_set(&s2, "one-more", "v"), SES_E_LIMIT);
+  tc_rc("data: replacing at the limit ok", ses_data_set(&s2, "key5", "w"), SES_OK);
+  // Byte limit: 4096 encoded bytes. Three 1024-byte values plus keys fit
+  // (3 * 1028); a fourth does not.
+  var t3: SesToken;
+  var s3: SesSession;
+  ses_create(m, "bytes", T0, &t3, &s3);
+  tc_rc("data: value 1", ses_data_set(&s3, "a", v1024), SES_OK);
+  tc_rc("data: value 2", ses_data_set(&s3, "b", v1024), SES_OK);
+  tc_rc("data: value 3", ses_data_set(&s3, "c", v1024), SES_OK);
+  tc_rc("data: value 4 exceeds 4096 bytes", ses_data_set(&s3, "d", v1024), SES_E_LIMIT);
+  tc_rc("data: count unchanged after refusal", ses_data_count(&s3), 3);
+  var rest: string = rep(119, 4096 - 3 * 1028 - 4);
+  tc_rc("data: exactly full fits", ses_data_set(&s3, "z", rest), SES_OK);
+  tc_i64("data: encoded size is the cap", s3.rec.data_len, 4096);
+  tc_rc("data: one more byte refused", ses_data_set(&s3, "y", ""), SES_E_LIMIT);
+  // A dead handle refuses everything.
+  var dead: SesSession;
+  tc_rc("data: dead handle get", ses_data_get(&dead, "a", &v), SES_E_INVALID);
+  tc_rc("data: dead handle set", ses_data_set(&dead, "a", "b"), SES_E_INVALID);
+  free(k64.chars);
+  free(k65.chars);
+  free(v1024.chars);
+  free(v1025.chars);
+  free(rest.chars);
+}
+
+fn test_flash(m: SesManager*) {
+  var tok: SesToken;
+  var s: SesSession;
+  ses_create(m, "flash", T0, &tok, &s);
+  tc_rc("flash: none at create", ses_flash_count(&s), 0);
+  tc_rc("flash: add notice", ses_flash_add(&s, "notice", "Saved."), SES_OK);
+  tc_rc("flash: add error", ses_flash_add(&s, "error", "Disk full."), SES_OK);
+  tc_rc("flash: not readable in the same request", ses_flash_count(&s), 0);
+  tc_rc("flash: save", ses_save(m, &s), SES_OK);
+  var l: SesSession;
+  tc_rc("flash: next lookup", ses_lookup(m, ses_token_str(&tok), T0 + 1, &l), SES_OK);
+  tc_rc("flash: two received", ses_flash_count(&l), 2);
+  var k: string;
+  var t: string;
+  tc_rc("flash: first", ses_flash_at(&l, 0, &k, &t), SES_OK);
+  tc_str("flash: first kind", k, "notice");
+  tc_str("flash: first text", t, "Saved.");
+  ses_flash_at(&l, 1, &k, &t);
+  tc_str("flash: second kind", k, "error");
+  tc_str("flash: second text", t, "Disk full.");
+  tc_rc("flash: out of range", ses_flash_at(&l, 2, &k, &t), SES_E_NOT_FOUND);
+  var l2: SesSession;
+  tc_rc("flash: lookup after", ses_lookup(m, ses_token_str(&tok), T0 + 2, &l2), SES_OK);
+  tc_rc("flash: shown once only", ses_flash_count(&l2), 0);
+  var all_ok: bool = true;
+  for i in 0..8 {
+    if (ses_flash_add(&l2, "n", "m") != SES_OK) { all_ok = false; }
+  }
+  tc_ok("flash: 8 fit", all_ok);
+  tc_rc("flash: 9th refused", ses_flash_add(&l2, "n", "m"), SES_E_LIMIT);
+  var long: string = rep(120, 513);
+  tc_rc("flash: 513-byte text refused", ses_flash_add(&l2, "n", long), SES_E_LIMIT);
+  tc_rc("flash: empty kind", ses_flash_add(&l2, "", "m"), SES_E_ARG);
+  free(long.chars);
+}
+
+fn main() -> int32 {
+  var c: SesConfig;
+  tf_config(&c);
+  var m: SesManager;
+  var st: SesStore;
+  tf_manager(&m, &c, &st);
+  test_data(&m);
+  test_flash(&m);
+  return tc_finish("data");
+}

@@ -1,0 +1,12 @@
+import "mbuild/api";
+
+// A minimal dependent of session: no link flags, no C settings of its own.
+// It must build and run with only the dependency below; libsodium's link
+// argument has to arrive transitively (session -> crypto).
+fn project() {
+  mb_package("session_dependent", "0.1.0");
+}
+
+fn deps() {
+  mb_dep_path("session", "../..");
+}
